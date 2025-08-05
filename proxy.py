@@ -10,8 +10,8 @@ from typing import List, Dict
 CLASSIFICATION_SERVER_URL = "http://localhost:8001/classify"
 
 app = FastAPI(
-    title="Simple Optimal Proxy",
-    description="Simple but effective batching that processes immediately"
+    title="Optimal Batching Proxy",
+    description="Optimal batching that sorts by length to minimize latency"
 )
 
 class ProxyRequest(BaseModel):
@@ -30,8 +30,8 @@ class PendingRequest:
     length: int
     future: asyncio.Future
 
-class SimpleOptimalProxy:
-    """Simple optimal proxy that processes batches immediately"""
+class OptimalBatchingProxy:
+    """Optimal batching proxy that sorts by length to minimize latency"""
     
     def __init__(self):
         self.pending_requests: Dict[str, PendingRequest] = {}
@@ -77,37 +77,57 @@ class SimpleOptimalProxy:
         return future
     
     async def _batch_processor_loop(self):
-        """Main loop that processes batches immediately"""
+        """Main loop that processes batches"""
         while self.running:
             try:
-                # Process immediately when we have requests
+                # Process when we have requests
                 if self.request_queue:
-                    batch = self._create_simple_batch()
+                    batch = self._create_optimal_batch()
                     if batch:
                         await self._process_batch(batch)
                     else:
-                        await asyncio.sleep(0.0001)  # 0.1ms - very fast
+                        await asyncio.sleep(0.001)
                 else:
-                    await asyncio.sleep(0.0001)  # 0.1ms
+                    await asyncio.sleep(0.001)
                 
             except Exception as e:
                 print(f"Error in batch processor: {e}")
-                await asyncio.sleep(0.001)
+                await asyncio.sleep(0.01)
     
-    def _create_simple_batch(self) -> List[str]:
-        """Create simple batch - take first 5 requests"""
+    def _create_optimal_batch(self) -> List[str]:
+        """Create optimal batch by sorting requests by length"""
         if not self.request_queue:
             return []
         
-        # Take up to 5 requests from the queue
+        # Get all available requests with their lengths
+        available_requests = []
+        temp_queue = deque()
+        
+        # Collect all available requests
+        while self.request_queue:
+            sequence = self.request_queue.popleft()
+            if sequence in self.pending_requests:
+                req = self.pending_requests[sequence]
+                available_requests.append((sequence, req.length))
+            temp_queue.append(sequence)
+        
+        # Put back requests we didn't use
+        while temp_queue:
+            self.request_queue.appendleft(temp_queue.pop())
+        
+        if not available_requests:
+            return []
+        
+        # Sort by length to minimize max_length in batches
+        available_requests.sort(key=lambda x: x[1])
+        
+        # Take up to 5 shortest requests
         batch = []
-        for _ in range(5):
-            if self.request_queue:
-                sequence = self.request_queue.popleft()
-                if sequence in self.pending_requests:
-                    batch.append(sequence)
-            else:
-                break
+        for sequence, _ in available_requests[:5]:
+            batch.append(sequence)
+            # Remove from queue
+            if sequence in self.request_queue:
+                self.request_queue.remove(sequence)
         
         return batch
     
@@ -147,7 +167,7 @@ class SimpleOptimalProxy:
                 for sequence in sequences:
                     if sequence in self.pending_requests:
                         self.request_queue.appendleft(sequence)
-                await asyncio.sleep(0.001)  # Minimal backoff
+                await asyncio.sleep(0.01)
             
             else:
                 # Other error - fail all requests in batch
@@ -166,7 +186,7 @@ class SimpleOptimalProxy:
                         req.future.set_exception(e)
 
 # Global proxy instance
-proxy = SimpleOptimalProxy()
+proxy = OptimalBatchingProxy()
 
 @app.on_event("startup")
 async def startup_event():
@@ -181,12 +201,12 @@ async def shutdown_event():
 @app.post("/proxy_classify")
 async def proxy_classify(req: ProxyRequest):
     """
-    Simple optimal proxy that:
+    Optimal batching proxy that:
     
-    1. Takes first 5 requests from queue
-    2. Processes batches immediately
-    3. Uses very fast polling (0.1ms)
-    4. Focuses on throughput over perfect optimization
+    1. Sorts requests by length before batching
+    2. Takes shortest requests first to minimize max_length
+    3. Processes up to 5 requests per batch
+    4. Minimizes latency through optimal length grouping
     """
     # Add request to proxy and get future for result
     future = proxy.add_request(req.sequence)
